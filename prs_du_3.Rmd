@@ -1,0 +1,456 @@
+---
+title: "prs_du_3"
+author: "Islambek Ziyash, Oleksandr Popovych, Yehor Teroshyn"
+output: html_document
+date: "2025-05-28"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)     
+library(eurostat)      
+library(countrycode)   
+library(DT)            
+library(knitr)
+library(lmtest)
+library(car)
+options(scipen = 999)  
+```
+
+## Úloha 1
+
+Načteme data z databáze Eurostat
+
+```{r}
+raw_data <- get_eurostat("nama_10_fte")
+raw_data
+```
+
+Zobrazíme strukturu datasetu
+
+```{r}
+glimpse(raw_data)
+```
+
+Vidime ze data obsahují celkem 1504 řádků a 5 sloupců, kde:
+
+-   `freq` označuje frekvenci dat
+
+-   `unit` udává jednotku mzdy, v našem případě "EUR"
+
+-   `geo` obsahuje kód země
+
+-   `TIME_PERIOD` představuje časové období
+
+-   `values` obsahuje číselné hodnoty průměrné mzdy v eurech
+
+Vyfiltrujeme data pro rok 2016 a jednotku EUR a pro prehlednost prejmenujeme kody zemi na jejich nazvy. Funkce "countrycode" nezna kody EA20 a EU27_2020 takze jsem to udelal rucne.
+
+```{r}
+data <- raw_data %>%
+  filter(unit == "EUR", TIME_PERIOD == as.Date("2016-01-01")) %>%
+  select(geo, salary = values) %>%
+  mutate(
+    geo = case_when(
+      geo == "EA20" ~ "Euro area (EA20)",
+      geo == "EU27_2020" ~ "European Union (EU27)",
+      TRUE ~ countrycode(geo, "eurostat", "country.name")
+    )
+  ) %>%
+  filter(!is.na(geo)) %>%
+  select(geo, salary)
+
+data
+```
+
+0Podivame se na zakladni statistiky a zobrazime si par grafu
+
+```{r}
+summary(data$salary)
+```
+
+```{r}
+ggplot(data, aes(x = salary)) +
+  geom_histogram(binwidth = 5000, fill = "#69b3a2", color = "white") +
+  labs(title = "Rozdělení průměrných mezd v roce 2016",
+       x = "Průměrná mzda (EUR)",
+       y = "Počet zemí")
+```
+
+```{r}
+ggplot(data, aes(y = salary)) +
+  geom_boxplot(fill = "#404080", color = "black") +
+  labs(title = "Boxplot průměrných mezd",
+       y = "Průměrná mzda (EUR)")
+```
+
+### Interpretace výsledků a diskuse
+
+#### Charakteristika rozdělení mezd
+
+-   Medián průměrných mezd činí **23 002 EUR**, zatímco průměr je vyšší – **26 846 EUR**. To naznačuje pravostranně asymetrické (pravděpodobně pozitivně šikmé) rozdělení
+
+-   Nejnižší zaznamenaná průměrná mzda je **6 767 EUR**, nejvyšší **62 037 EUR**, což představuje výrazný rozdíl mezi jednotlivými státy
+
+-   Histogram ukazuje, že většina zemí má průměrné mzdy do **40 000 EUR**, a několik zemí se nachází ve vyšším pásmu (např. Lucembursko, Dánsko)
+
+-   Boxplot potvrzuje přítomnost výstupních hodnot (outlierů), především na horním konci spektra
+
+#### Možné faktory ovlivňující průměrné mzdy:
+
+-   **Hospodářská vyspělost** dané země – HDP na obyvatele je často silně korelován s výší mezd
+
+-   **Daňový a sociální systém** – výše odvodů, přímých daní, podpory rodin, atd
+
+-   **Životní náklady** – vyšší mzdy často odpovídají vyšším nákladům (např. v západní Evropě)
+
+-   **Struktura ekonomiky** – státy s vyšším podílem znalostních a technologických odvětví mívají vyšší mzdy
+
+-   **Zaměstnanost a míra nezaměstnanosti** – nižší nezaměstnanost a větší poptávka po pracovní síle může zvyšovat mzdy
+
+## Úloha 2
+
+```{r}
+raw_gdp <- get_eurostat("nama_10_pc", time_format = "date")
+head(raw_gdp)         
+
+cols <- colnames(raw_gdp)
+
+cols
+
+unique_list <- lapply(cols, function(col) unique(raw_gdp[[col]]))
+
+names(unique_list) <- cols
+
+unique_list[1:4]
+```
+
+```{r}
+gdp_2016 <- raw_gdp %>%
+  filter(TIME_PERIOD == as.Date("2016-01-01"),
+         unit == "CP_PPS_EU27_2020_HAB",
+         na_item == "B1GQ") %>%
+  select(geo, gdp_per_capita = values)
+
+head(gdp_2016)
+
+gdp_2016 <- gdp_2016 %>%
+  mutate(geo = countrycode(geo, origin = "eurostat", destination = "country.name"))
+
+head(gdp_2016)
+```
+
+Vybrali jsme data o HDP na obyvatele za rok 2016 ve standardních jednotkách kupní síly (PPS). Následně jsme převedli kódy zemí z formátu Eurostatu na jejich plné názvy pro lepší čitelnost a spojení s ostatními daty.
+
+```{r}
+euro_countries <- c("Austria", "Belgium", "Cyprus", "Estonia", "Finland", "France", "Germany",
+                    "Greece", "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta",
+                    "Netherlands", "Portugal", "Slovakia", "Slovenia", "Spain")
+
+data <- data %>%
+  mutate(uses_euro = ifelse(geo %in% euro_countries, "Euro", "Other"))
+```
+
+Do datasetu jsme přidali novou kategorickou proměnnou `uses_euro`, která označuje, zda daná země používá euro jako svou měnu. Tato informace bude následně použita při analýze vlivu měny na průměrnou mzdu.
+
+```{r}
+monarchies <- c("Belgium", "Denmark", "Luxembourg", "Netherlands", "Spain", 
+                "Sweden", "United Kingdom", "Norway", "Liechtenstein")
+
+data <- data %>%
+  mutate(government_type = ifelse(geo %in% monarchies, "Monarchy", "Republic"))
+```
+
+Do datasetu jsme přidali novou kategorickou proměnnou `government_type`, která rozlišuje mezi monarchiemi a republikami. Tato proměnná nám umožní analyzovat vliv formy státního zřízení na průměrnou mzdu.
+
+```{r}
+edu_raw <- get_eurostat("educ_uoe_enra04")
+                        
+cols <- colnames(edu_raw)
+
+cols
+
+unique_list <- lapply(cols, function(col) unique(edu_raw[[col]]))
+
+names(unique_list) <- cols
+
+unique_list[1:4]
+edu_raw
+```
+
+```{r}
+higher_edu <- edu_raw %>%
+  filter(
+    TIME_PERIOD == as.Date("2016-01-01"),
+    unit == "PC",
+    isced11 %in% c("ED5", "ED6", "ED7", "ED8")
+  ) %>%
+  group_by(geo) %>%
+  summarise(higher = sum(values, na.rm = TRUE))
+
+total_edu <- edu_raw %>%
+  filter(
+    TIME_PERIOD == as.Date("2016-01-01"),
+    unit == "PC",
+    isced11 == "ED0-8"
+  ) %>%
+  select(geo, total = values)
+
+edu_data <- higher_edu %>%
+  inner_join(total_edu, by = "geo") %>%
+  mutate(tertiary_edu = higher / total) %>%
+  mutate(geo = countrycode(geo, "eurostat", "country.name")) %>%
+  filter(!is.na(geo))
+
+head(edu_data)
+
+edu_data <- edu_data %>%
+  select(-higher, -total)
+
+edu_data
+```
+
+Z původních dat o vzdělání jsme vybrali podíl osob s dosaženým terciárním vzděláním (ISCED úrovně 5 až 8) pro rok 2016. Procentuální podíly jsme agregovali podle zemí a upravili kódy zemí na jejich názvy.
+
+```{r}
+merged_data <- data %>%
+  left_join(edu_data, by = "geo")
+
+head(merged_data)
+```
+
+```{r}
+merged_data <- merged_data %>%
+  left_join(gdp_2016, by = "geo")
+head(merged_data)
+
+merged_data <- merged_data %>%
+  mutate(tertiary_edu = tertiary_edu * 100)
+head(merged_data)
+```
+
+### Výběr proměnných
+
+Pro analýzu jsme vybrali čtyři proměnné dostupné z databází Eurostatu a dalších zdrojů:
+
+**salary** – průměrná mzda v roce 2016 (numerická, závislá proměnná),
+
+**gdp_per_capita** – HDP na obyvatele v roce 2016 (numerická),
+
+**tertiary_edu** – podíl obyvatel s terciárním vzděláním (numerická),
+
+**uses_euro** – zda země používá euro jako měnu (kategoriální: Euro / Other),
+
+**government_type** – typ vlády (kategoriální: Monarchie / Republika).
+
+Vybrané proměnné mají logickou souvislost s úrovní mezd – HDP a vzdělání ovlivňují ekonomickou výkonnost a produktivitu, zatímco měnová politika a forma vlády mohou ovlivnit ekonomické podmínky a stabilitu.
+
+```{r}
+summary(merged_data)
+
+cor(merged_data %>% select(salary, gdp_per_capita, tertiary_edu), use = "complete.obs")
+
+ggplot(merged_data, aes(x = gdp_per_capita, y = salary)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "The relationship between average salary and GDP per capita")
+```
+
+Graf s regresní přímkou ukazuje silně pozitivní vztah mezi HDP na obyvatele a průměrnou mzdou. Většina bodů leží blízko modré čáry, což potvrzuje vysokou korelaci a význam této proměnné v regresním modelu. Šedé pásmo reprezentuje interval spolehlivosti a ukazuje relativně nízkou nejistotu v centrální části dat. Tento vztah je klíčovým výsledkem celé analýzy.
+
+```{r}
+ggplot(merged_data, aes(x = uses_euro, y = salary)) +
+  geom_boxplot() +
+  labs(title = "Distribution of salaries based on the use of the euro")
+```
+Vidíme, že země s eurem mají obecně vyšší medián mezd i větší rozptyl, ale rozdíly nejsou extrémní. Překrývání rozmezí naznačuje, že používání eura nemusí být klíčovým faktorem pro vysvětlení rozdílů v platech. To odpovídá i regresní analýze, kde proměnná uses_euro nebyla statisticky významná.
+
+```{r}
+model <- lm(salary ~ gdp_per_capita + tertiary_edu + uses_euro + government_type, data = merged_data)
+model
+summary(model)
+```
+
+## Interpretace výsledků regresního modelu
+
+Byl vytvořen lineární regresní model, který vysvětluje průměrnou mzdu (**salary**) na základě těchto proměnných: HDP na obyvatele (**gdp_per_capita**), podíl populace s terciárním vzděláním (**tertiary_edu**), používání eura (**uses_euro**) a typ vlády (**government_type**).
+
+### Shrnutí modelu
+
+Model vysvětluje přibližně 81,75 % variability průměrné mzdy mezi zeměmi (Adjusted R-squared = 0,7769). To znamená, že zvolené proměnné dobře zachycují rozdíly v platech mezi sledovanými zeměmi.
+
+### Interpretace koeficientů
+
+**Intercept (-19563,67)**: Odhadovaná průměrná mzda, pokud by všechny nezávislé proměnné byly nulové. Tento odhad není statisticky významný (p = 0,266), proto ho nelze prakticky interpretovat.
+
+**gdp_per_capita (1,065)**: Koeficient je vysoce statisticky významný (p \< 0,001). Znamená to, že s každým zvýšením HDP na obyvatele o 1 jednotku vzroste průměrná mzda přibližně o 1,07 jednotky. HDP je tedy silným pozitivním prediktorem mzdy.
+
+**tertiary_edu (1493,33)**: Tento koeficient je také statisticky významný (p = 0,028). Znamená to, že s každým zvýšením podílu populace s terciárním vzděláním o 1 % se průměrná mzda zvýší o cca 1493.
+
+**uses_euroOther (-1704,93)**: Koeficient není statisticky významný (p = 0,660), což znamená, že používání eura nemá statisticky významný vliv na průměrnou mzdu v tomto modelu.
+
+**government_typeRepublic (-12885,52)**: Tento koeficient je statisticky významný (p = 0,021) a ukazuje, že v republikách jsou průměrné mzdy o přibližně 12 885 nižší než v monarchiích, ostatní faktory při tom zůstávají konstantní.
+
+### Závěr
+
+Model potvrzuje, že ekonomická úroveň země (měřená HDP na obyvatele) a vzdělání populace jsou klíčové faktory ovlivňující průměrné mzdy. Typ vlády také významně souvisí s výší mezd, přičemž monarchie vykazují vyšší mzdy než republiky. Naopak, používání eura nemá ve sledovaných datech významný efekt na mzdy.
+
+Celkově model dobře vysvětluje rozdíly v průměrných mzdách mezi evropskými zeměmi.
+
+```{r}
+
+table_government_uses <- table(merged_data$government_type, merged_data$uses_euro)
+chisq.test(table_government_uses)
+
+t.test(salary ~ uses_euro, data = merged_data)
+
+ggplot(merged_data, aes(x = tertiary_edu)) + geom_histogram(binwidth = 0.5) + 
+  labs(title = "Distribution of higher education levels")
+
+table(merged_data$government_type)
+```
+
+Histogram ukazuje rozdělení hodnot proměnné tertiary_edu mezi státy. Většina zemí má podíl vysokoškolsky vzdělaných obyvatel mezi 15 % a 22 %, přičemž nejčastější hodnota se pohybuje okolo 18 %. Rozdělení není zcela normální a obsahuje i několik odlehlých pozorování. To může částečně vysvětlovat, proč proměnná tertiary_edu nevykazuje silný lineární vztah se mzdami.
+
+## Interpretace výsledků statistických testů
+
+### Test nezávislosti (Pearsonův chí-kvadrát)
+
+Byl proveden test nezávislosti mezi dvěma kategoriálními proměnnými: **government_type** (typ vlády: monarchie vs. republika) a **uses_euro** (používání eura ano/ne). Výsledek testu:
+
+Hodnota chí-kvadrát statistiky je extrémně blízká nule (X² ≈ 0),
+
+p-hodnota je 1, což znamená, že nemáme žádný důvod zamítat hypotézu o nezávislosti těchto proměnných.
+
+**Závěr:** Typ vlády a používání eura spolu nejsou statisticky závislé.
+
+### Welchův t-test pro rozdíl průměrů mezd podle používání eura
+
+Byl proveden Welchův t-test pro porovnání průměrných mezd (**salary**) mezi skupinami zemí používajících euro a těch, které euro nepoužívají.
+
+t-statistika: 0,912
+
+stupně volnosti: přibližně 16
+
+p-hodnota: 0,3751 (větší než 0,05)
+
+95% interval spolehlivosti pro rozdíl průměrů: od -7937 do 19926
+
+Průměrné mzdy:
+
+Země používající euro: 28 987
+
+Země nepoužívající euro: 22 993
+
+**Závěr:** Neexistuje statisticky významný rozdíl v průměrných mzdách mezi zeměmi používajícími euro a těmi, které euro nepoužívají.
+
+
+    
+## Úloha 3
+
+### 1. Výchozí model se všemi proměnnými
+```{r}
+model <- lm(salary ~ gdp_per_capita + tertiary_edu + uses_euro + government_type, data = merged_data)
+summary(model)
+```
+
+Tento model vysvětluje přibližně 78 % variability mezd (Adjusted R² = 0.777), což značí solidní kvalitu. Statisticky významné jsou proměnné HDP na obyvatele (p < 0.001), podíl vysokoškolsky vzdělaných osob (p < 0.05) a forma vlády (p < 0.05). Proměnná „uses_euro“ není významná (p = 0.66), stejně jako konstanta (průsečík). Vzhledem k vysokému standardnímu odhadu by model mohl být dále optimalizován.
+
+
+### 2. Krokový výběr proměnných (Stepwise AIC)
+```{r}
+library(MASS)
+step_model <- stepAIC(model, direction = "both")
+summary(step_model)
+```
+
+Pomocí metody stepAIC byl z modelu automaticky odstraněn prediktor uses_euro, protože jeho odstranění snížilo AIC z 416.82 na 415.07. To naznačuje, že proměnná uses_euro nepřispívala ke kvalitě modelu. Výsledný model obsahuje pouze tři prediktory: HDP na obyvatele, podíl vysokoškolsky vzdělaných a typ vlády. Optimalizovaný model je tedy jednodušší a statisticky lepší.
+
+### 3. Diagnostika vícenásobné kolinearity
+```{r}
+vif(step_model)
+```
+Diagnostika vícenásobné kolinearity pomocí VIF (Variance Inflation Factor) slouží k odhalení, zda nejsou prediktory v modelu příliš silně vzájemně korelované. Vysoká kolinearita může způsobit nestabilní odhady koeficientů a ztížit interpretaci modelu. V našem případě jsou všechny hodnoty VIF (skoro) pod 2, což značí, že mezi proměnnými není výrazná kolinearita. Model je tedy z hlediska této diagnostiky spolehlivý.
+
+### 4. Diagnostické grafy
+```{r}
+par(mfrow = c(2, 2))
+plot(step_model)
+```
+
+- Residuals vs Fitted
+Rezidua jsou rozprostřena víceméně náhodně, ale u vyšších hodnot dochází k odchylce směrem dolů. Pozorování č. 20 má extrémní negativní reziduum a působí jako odlehlý bod.
+
+- Q-Q Plot (Normalita reziduí)
+Většina bodů leží blízko přímky, což značí přibližně normální rozdělení reziduí. Pozorování č. 20 opět výrazně vybočuje a narušuje normalitu.
+
+- Scale-Location
+Červená čára naznačuje mírný nárůst rozptylu reziduí, což může ukazovat na slabou heteroskedasticitu. Největší odchylku má opět pozorování č. 20.
+
+- Residuals vs Leverage
+Pozorování č. 20 má vysoky leverage a zároveň velké reziduum, což z něj dělá velmi vlivný bod. Mělo by být zváženo jeho odstranění nebo další analýza.
+
+### 5. Test normality reziduí
+```{r}
+shapiro.test(residuals(step_model))
+```
+
+Hodnota p = 0.6381 je výrazně vyšší než hladina významnosti 0.05, takže neodmítáme nulovou hypotézu o normalitě. To znamená, že rezidua jsou v souladu s předpokladem normálního rozdělení. Výsledek podporuje platnost modelu z hlediska této podmínky lineární regrese.
+
+### 6. Test homoskedasticity (Breusch-Pagan)
+```{r}
+bptest(step_model)
+```
+
+p-hodnota testu Breusch-Pagan je 0.16, což je více než 0.05, takže neodmítáme nulovou hypotézu o konstantní varianci reziduí. To znamená, že v modelu nebyla zjištěna významná heteroskedasticita. Předpoklad homoskedasticity je tedy splněn a model je v tomto ohledu v pořádku.
+
+### 7. Identifikace vlivného pozorování pomocí Cookovy vzdálenosti
+```{r}
+influential_index <- which.max(cooks.distance(step_model))
+influential_row <- as.numeric(rownames(step_model$model))[influential_index]
+merged_data[influential_row, ]
+data_no20 <- merged_data[-influential_row, ]
+```
+
+Pomocí Cookovy vzdálenosti bylo identifikováno vlivné pozorování – konkrétně Lucembursko. Má výrazně vyšší HDP na obyvatele i mzdu než ostatní země, a proto výrazně ovlivňuje odhady modelu. Z důvodu jeho extrémní hodnoty bylo rozhodnuto toto pozorování z analýzy odstranit. Nový dataset data_no20 bude použit pro robustnější modelování.
+
+### 8. Model bez vlivného pozorování
+```{r}
+model_no20 <- lm(salary ~ gdp_per_capita + tertiary_edu + government_type, data = data_no20)
+summary(model_no20)
+```
+
+Po odstranění vlivného pozorování (Lucemburska) se kvalita modelu výrazně zlepšila – Adjusted R² vzrostlo na 0.901. HDP na obyvatele zůstává silně statisticky významným prediktorem (p < 0.001) a typ vlády je také významný (p < 0.05). Proměnná tertiary_edu však ztratila statistickou významnost (p = 0.3569), což naznačuje, že nemá výrazný vliv na mzdy ve zbytku dat. 
+
+### 9. Alternativní model bez proměnné tertiary_edu
+
+Zkusme se ještě podívat, jak se náš model chová bez proměnné tertiary_edu.
+
+```{r}
+model_no_ter <- lm(salary ~ gdp_per_capita + government_type, data = data_no20)
+summary(model_no_ter)
+```
+
+Po odstranění proměnné tertiary_edu se model stal jednodušším, ale došlo k mírnému snížení přesnosti – Adjusted R² kleslo z 0.901 na 0.8485. I přesto si model zachovává vysokou vysvětlovací schopnost. Proměnná HDP na obyvatele zůstává silně významná a typ vlády také. Ztráta proměnné tertiary_edu tedy nevede k dramatickému zhoršení modelu, ale mírný pokles výkonu je patrný.
+
+
+### 10. Důvěryhodné intervaly pro koeficienty modelu
+```{r}
+confint(model_no20)
+```
+Intervaly spolehlivosti ukazují, že koeficienty proměnných gdp_per_capita a government_typeRepublic jsou statisticky významné, protože jejich intervaly neobsahují nulu. Naopak interval pro tertiary_edu zahrnuje nulu (od -486 do 1281), což potvrzuje, že tato proměnná není spolehlivým prediktorem. Výsledky odpovídají p-hodnotám z regresního modelu a podporují úvahu o možném vyřazení této proměnné.
+
+### 11. Výběr finálního modelu
+Pro finální model vybrali jsme ponechat model model_no20, který má vyšší vysvětlovací sílu (Adjusted R² = 0.901). Ačkoli proměnná tertiary_edu není statisticky významná, byla ponechána z důvodu jejího potenciálního vysvětlujícího významu. V případě důrazu na predikci lze však alternativně zvolit zjednodušený model model_no_ter
+
+### 11. Praktická interpretace
+Výsledky regresní analýzy ukazují, že nejdůležitějším faktorem ovlivňujícím průměrnou mzdu ve zkoumaných evropských zemích je HDP na obyvatele. Každé zvýšení HDP o 1 000 € vede přibližně k nárůstu mezd o 1 840 €, což potvrzuje silnou ekonomickou závislost.
+
+Dále byl významným faktorem také typ vlády – v průměru jsou mzdy v republikách o zhruba 7 500 € nižší než v monarchiích, při zachování ostatních proměnných konstantních. Tento výsledek může odrážet odlišnosti ve struktuře ekonomiky nebo velikosti států.
+
+Naopak proměnná podíl vysokoškolsky vzdělaných osob se ukázala jako statisticky nevýznamná, což znamená, že ve zkoumaném vzorku sama o sobě nevysvětluje rozdíly v mzdách mezi zeměmi. Může to být způsobeno tím, že efekt vzdělání se již odráží v HDP nebo že závislost není lineární.
+
+Model jako celek vykazuje velmi dobrou vysvětlovací sílu (Adjusted R² = 0.901), což znamená, že zvolené proměnné dobře popisují variabilitu mezd mezi státy. Po odstranění extrémního vlivu Lucemburska se model stal stabilnějším a přesnějším.
+
+
+
+
